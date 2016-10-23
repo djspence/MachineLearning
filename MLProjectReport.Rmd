@@ -1,0 +1,117 @@
+---
+title: "Machine Learning Course Project"
+author: "D. Spence"
+output: 
+  html_document:
+    keep_md: true
+---
+
+## Overview
+We are given a data set with human activity measurements taken from several
+weight lifting exercises, performed in one of five ways (labeled A-E). Only one of the ways is correct (method A). The other ways of performing the exercise reflect common mistakes made during weight lifting. Our goal is to generate a model from the measurements that correctly predicts which way the exercise was performed. The "Weight Lifting Exercises" dataset for this analysis was made available by the authors named below and was part of their study in the work cited:  
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. *Qualitative Activity Recognition of Weight Lifting Exercises.* Proceedings of the 4th International Conference in Cooperation with SIGCHI (Augmented Human '13). Stuttgart, Germany: ACM SIGCHI, 2013.
+
+## Loading and Preprocessing Data
+First we load essential libraries for the task. Then we read in the data file that contains the training data.
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+wle <- read.csv("pml-training.csv", na.strings = c("","NA"))
+```
+The data set contains 160 variables, but many of these are mostly blank or NA. This is the reason we stipulated both empty string and NA as representing missing data when reading in the file. We remove variables for which values are missing over half the time. Since the data set has 19622 observations, I have set the threshold for missing values at 10,000.
+
+```{r echo=TRUE, warning=FALSE}
+#Remove identifier and timestamp variables; these shouldn't be predictors
+wle <- wle[,-c(1:5)]
+
+#Also remove columns that are over half empty/NA
+countNA <- function(column) sum(is.na(column))
+badcols <- (sapply(wle, countNA) > 10000) 
+badcolnames <- colnames(wle)[badcols]
+
+wle <- wle[,!badcols]
+```
+
+
+*We are removing these columns from the data set:*  
+```{r echo=FALSE, warning=FALSE}
+print(badcolnames)
+```
+
+This process leaves 55 columns in the data set, one of which is the outcome variable. The other 54 are potential predictors.
+
+## Method for Creating Prediction Model
+The outcome variable, classe, is a categorical variable. We will create the model using a random forest with functions available in the caret package. These functions also allow us to incorporate cross-validation into the training process. The machine on which these analyses are being run is limited in its capacity, so even though the caret package functions would theoretically allow us to accomplish the training with cross-validation on a large section of the training data at once, the machine could not handle the load. Therefore, the following phased approach was employed instead.
+
+###1. Set training options for 3-fold cross-validation  
+*All training to follow will use the random forest method with these training options.*
+```{r echo=TRUE, warning=FALSE}
+trainOpts <- trainControl()
+trainOpts$method <- "cv"
+trainOpts$number <- 3
+```
+
+###2. Train initially with 10% of the training data using all 54 predictors    
+```{r echo=TRUE, warning=FALSE}
+set.seed(44)
+
+inTrain <- createDataPartition(y=wle$classe, p=0.1, list=FALSE)
+trainingInit <- wle[inTrain,]
+trainingRest <- wle[-inTrain,]
+```
+
+```{r echo=TRUE, warning=FALSE, cache=TRUE}
+modFitInit <- train(classe ~ ., data = trainingInit, method = "rf", trControl=trainOpts, prox=TRUE)
+```
+
+```{r echo=TRUE, warning=FALSE}
+print(modFitInit)
+```
+
+
+###3. Narrow down number of predictors in data set  
+The initial model achieved the most accuracy with 28 variables per step. We determine which 28 variables were found to be most important (based on Gini index, the average decrease in impurity after splitting on that variable). We then pare down the remaining data to train with only those 28 predictors. This allows us to run the random forest with a larger set of data without locking up the PC.   
+
+```{r echo=TRUE, warning=FALSE}
+priority <- importance(modFitInit$finalModel, sort=TRUE)
+key <- order(priority, decreasing=TRUE)
+priority <- priority[key,, drop=FALSE]
+
+#Keep top 28 predictors and outcome variable only
+trainingRest <- trainingRest[,c(key[1:28],55)]
+```
+
+*These are the 28 predictor variables we are keeping:*
+```{r echo=FALSE, warning=FALSE}
+priority[1:28,,drop=FALSE]
+```
+
+###4. Generate main model  
+Using only the 28 predictors above, we train with 3-fold cross-validation a second time, using a new set of observations from the training data. The initial model was based on 10% of the observations in the data set; we are now generating a model with 30% of the **remaining** observations. I would like to have used more, but it was not feasible on the available computer. Therefore, the rest of the data set was saved to validate the model. 
+```{r echo=TRUE, warning=FALSE}
+
+inTrain <- createDataPartition(y=trainingRest$classe, p=0.3, list=FALSE)
+training <- trainingRest[inTrain,]
+validation <- trainingRest[-inTrain,]
+```
+```{r echo=TRUE, warning=FALSE, cache=TRUE}
+modFitMain <- train(classe ~ ., data = training, method = "rf", trControl=trainOpts)
+```
+
+**Here is the main model:**  
+```{r echo=TRUE, warning=FALSE}
+print(modFitMain)
+modFitMain$finalModel
+```
+This model has in-sample accuracy of 98%, even higher than the initial model.  
+
+### 5. Estimate out-of-sample accuracy with validation data  
+```{r echo=TRUE, warning=FALSE}
+validPred <- predict(modFitMain,validation)
+confusionMatrix(validPred,validation$classe)
+```
+
+## Conclusion  
+In this particular case, the accuracy on the validation set (99%) was even higher than the in-sample accuracy (98%). This is unusual, since the model was fitted to the training data and not the validation data. Possibly, the two-phased training approach helped to avoid over-fitting. Nevertheless, this result suggests an estimated out-of-sample accuracy of 99% for this model, which is exceptionally high. This model should predict the user's weight-lifting style extremely well.
+
